@@ -107,12 +107,35 @@ for chunk in agent.stream({"messages": [("user", message)]}):
 
 ---
 
+## Unit Testing (`tests/test_data.py`, `tests/test_tools.py`)
+
+### `tests/test_data.py` — data module
+- **`test_refresh_db_creates_table`** — after `refresh_db()`, SQLite `btc_ohlcv` table exists and has rows
+- **`test_load_df_returns_dataframe`** — `load_df()` returns a pandas DataFrame with all expected columns
+- **`test_load_df_has_correct_columns`** — asserts all 14 columns present (timestamp, ohlcv + 8 indicator cols)
+- **`test_indicators_not_all_null`** — RSI, MACD, BB, EMA columns are not entirely NaN (enough rows to compute)
+- **`test_timestamp_format`** — timestamp column values match `YYYY-MM-DD HH:MM:SS` format
+- **`test_upsert_does_not_duplicate`** — calling `refresh_db()` twice leaves no duplicate timestamps
+
+### `tests/test_tools.py` — agent tool
+- **`test_valid_query_returns_string`** — a valid query like `"close > 0"` returns a non-empty string
+- **`test_no_match_returns_message`** — a query that matches nothing returns the "No rows match" string
+- **`test_invalid_query_returns_error_string`** — a malformed query (e.g. `"invalid =="`) returns an error string, does not raise
+- **`test_returns_all_rows`** — result string row count matches the DataFrame query result count
+
+Tests use a real (temporary) SQLite DB fixture — no mocking of the data layer. CCXT calls are mocked with synthetic OHLCV data so tests run offline.
+
+---
+
 ## Dependencies to Add
 - `pandas-ta` — technical indicator calculations
+- `pytest` — test runner
 
 ## Files to Modify
 - `app.py` — full rewrite of current skeleton
-- `pyproject.toml` — add `pandas-ta`
+- `pyproject.toml` — add `pandas-ta`, `pytest`
 
 ## Files to Create
 - `data.py` — new data ingestion module
+- `tests/test_data.py` — unit tests for data module
+- `tests/test_tools.py` — unit tests for agent tool
