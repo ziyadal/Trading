@@ -132,3 +132,10 @@ def load_df(db_path: str = DB_PATH) -> pd.DataFrame:
         return pd.read_sql(f"SELECT * FROM {TABLE} ORDER BY timestamp", conn)
     finally:
         conn.close()
+
+
+if __name__ == "__main__":
+    print("Fetching BTC/USDT 5m candles from Binance...")
+    refresh_db()
+    df = load_df()
+    print(f"Database built: {len(df)} candles.  Latest: {df['timestamp'].iloc[-1]}")

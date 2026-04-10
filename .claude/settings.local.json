@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:langchain-ai.github.io)",
+      "WebFetch(domain:docs.langchain.com)",
+      "mcp__docs-langchain__search_docs_by_lang_chain",
+      "mcp__docs-langchain__get_page_docs_by_lang_chain",
+      "Bash(curl -s \"https://api.github.com/search/repositories?q=mcp+server+technical+analysis&sort=stars&per_page=20\")",
+      "Bash(python3 -c \" import json, sys data = json.load\\(sys.stdin\\) for r in data.get\\('items', []\\)[:20]: print\\(f\\\\\"Stars: {r['stargazers_count']} | {r['full_name']} | {r['html_url']}\\\\\"\\) print\\(f\\\\\" Desc: {r.get\\('description','N/A'\\)}\\\\\"\\) print\\(f\\\\\" Updated: {r['updated_at']} | Lang: {r.get\\('language','N/A'\\)}\\\\\"\\) print\\(\\) \")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:mcp.alphavantage.co)",
+      "WebFetch(domain:altfins.com)",
+      "WebFetch(domain:mcp.so)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:www.yixtian.com)",
+      "WebFetch(domain:codecut.ai)",
+      "Bash(uv run:*)",
+      "Bash(rm:*)",
+      "Bash(ls -la *.py)"
+    ]
+  }
+}
