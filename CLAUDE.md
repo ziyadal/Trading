@@ -4,47 +4,48 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Multi-agent AI trading system that uses LLM-powered agents (via LangChain/LangGraph) to analyze crypto markets, make trading decisions, and execute trades. Currently in **early planning/prototyping phase** — the codebase is mostly scaffolding with a project blueprint in `notes/PROJECT_BLUEPRINT.md`.
-
-**Target market:** Cryptocurrency first 
+Multi-agent AI trading system for BTC/USDT. Uses LLM-powered agents (LangChain/LangGraph) to analyze crypto markets via technical analysis and news research, then runs a structured bull vs bear debate to produce a final trading decision.
 
 ## Commands
 
-This project uses **uv** for dependency management (Python 3.12):
+Uses **uv** for dependency management (Python 3.12):
 
 ```bash
-uv sync              # Install dependencies
-uv run main.py       # Run the main entry point
-uv run pytest        # Run tests (none exist yet)
-uv add <package>     # Add a dependency
+uv sync                                          # Install dependencies
+uv run main.py                                   # Live run (fetches fresh data)
+uv run main.py "my_label"                        # Live run with custom eval label
+uv run main.py "backtest_v1" "2026-04-01 12:00:00"  # Backtest with cutoff timestamp
+uv run data.py                                   # Refresh market data only
+uv run ta_agent.py                               # Run TA agent standalone
+uv run pytest                                    # Run tests
 ```
 
-## Architecture (Planned)
+## Architecture
 
-Three-layer agent system orchestrated by LangGraph:
+The pipeline runs sequentially in `main.py:run_pipeline()`:
 
-1. **Analysis Layer** (parallel): Technical Analyst, Sentiment Analyst, News Analyst, Fundamentals Analyst — each produces signals with confidence scores
-2. **Decision Layer**: Research Synthesizer (dialectical reasoning, consensus scoring) → Trader Agent (position sizing, entry/exit)
-3. **Execution Layer**: Risk Manager (veto power, circuit breakers) → Order Executor → Position Tracker
+1. **Data ingestion** (`data.py`): Fetches 2 days of BTC/USDT 5m candles from Binance via CCXT, computes indicators (RSI-14, MACD, Bollinger Bands, EMA-50), upserts into `trading.db` SQLite.
 
-See `notes/PROJECT_BLUEPRINT.md` for the full architecture diagram, phased roadmap, risk rules, and technology choices.
+2. **Analysis agents** (run in sequence):
+   - `ta_agent.py`: ReAct agent with a `query_db` SQL tool against `trading.db`. Uses `gpt-4.1` with `response_format=TAOutput` for structured output. Queries use LIMIT clauses (100 rows for full-table scans, 50 for filtered) to stay within API token limits. Produces a 1-week price target with volume confirmation. Supports backtest mode via a `cutoff` parameter that transparently filters the SQL table.
+   - `news_agent.py`: Two-phase — Perplexity `sonar-deep-research` for raw research, then `gpt-4.1-mini` with `.with_structured_output(NewsOutput)` for structured assessment.
 
-## Tech Stack
+3. **Debate** (`debate.py`): Bull and Bear agents (`gpt-4.1-mini`) exchange opening arguments + 2 rebuttal rounds (with escalation — each round must introduce new arguments). PM sees the full transcript plus structured bull/bear numbers before deciding. Hard rule: R:R must be >= 1:1 or PM goes NEUTRAL.
 
-- **Agent framework:** LangChain + LangGraph (currently using `langchain.agents.create_agent`)
-- **LLM:** OpenAI gpt-4.1 (configured in code, key in `.env`)
-- **Planned additions:** CCXT (crypto exchange API), Backtrader (backtesting), FinBERT (sentiment NLP)
+4. **Eval logging** (`eval.py`): Logs all agent predictions (direction, targets, confidence) to `eval.db` SQLite for cross-run comparison.
+
+All structured outputs are Pydantic models in `models.py`: `TAOutput`, `NewsOutput`, `BullOutput`, `BearOutput`, `PMOutput`.
+
+## Key Patterns
+
+- **Structured output**: Debate rounds use free-text `create_agent`; final assessments use `ChatOpenAI.with_structured_output(PydanticModel)` directly. The TA agent uses `response_format=` on `create_agent`.
+- **Backtest mode**: Pass a cutoff timestamp to `run_pipeline()` or via CLI arg. `ta_agent.py` replaces `btc_ohlcv` in SQL queries with a filtered subquery. Data refresh is skipped in backtest mode.
+- **Two databases**: `trading.db` = market data (OHLCV + indicators), `eval.db` = prediction logs.
 
 ## Key Constraints
 
-- **Risk rules are non-negotiable** — max 1-2% risk per trade, stop loss on every trade, circuit breakers at 5%/10%/15% drawdown levels. These must be hardcoded, not configurable to bypass.
-- Config should live in YAML files (`config/`), not hardcoded values.
-- All agent decisions must be logged with full reasoning chains (planned: structlog).
-- `.env` contains API keys — never commit it.
+- **Risk rules are non-negotiable** — max 2% portfolio risk per trade, stop loss on every trade. These are enforced in the PM system prompt, not in code. Do not make them configurable or bypassable.
+- `.env` contains API keys (`OPENAI_API_KEY`, `PERPLEXITY_API_KEY`) — never commit it.
 
-## Current State
 
-- `main.py`: Placeholder entry point
-- `test.ipynb`: Prototype notebook showing basic LangChain agent creation with OpenAI
-- `notes/`: Project blueprint, market research docs, and brainstorming notes
-- No `src/`, `config/`, or `tests/` directories have been created yet — the blueprint's directory structure is aspirational
+Keep explanations clear and simple where possible do not over include technical jargon when asked to explain something. Explain to someone who is learning Computer science. 

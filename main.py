@@ -1,131 +1,105 @@
 """
-main.py — Full BTC/USDT trading pipeline.
+main.py — BTC/USDT trading pipeline orchestrator.
 
-Orchestrates three stages as a LangGraph:
-  1. Technical Analysis agent  (ta_agent.py)
-  2. News Research agent       (news_agent.py)
-  3. Bull vs Bear Debate       (debate.py)
+Usage:
+    uv run main.py                          # live run
+    uv run main.py "my_label"               # live run with custom label
+    uv run main.py "backtest_v1" "2026-04-01 12:00:00"  # backtest with cutoff
 """
 
-from typing import Annotated
+import sys
 
 from dotenv import load_dotenv
-from langgraph.graph import END, START, StateGraph
-from typing_extensions import TypedDict
 
-from debate import init_tracking_db, print_analytics, run_debate
+from data import refresh_db
+from debate import run_debate
+from eval import init_eval_db, log_run, print_comparison
 from news_agent import run_news_agent
 from ta_agent import run_ta_agent
 
 load_dotenv(override=True)
 
 
-# ---------------------------------------------------------------------------
-# Pipeline state
-# ---------------------------------------------------------------------------
+def run_pipeline(
+    cutoff: str | None = None,
+    run_label: str = "live",
+    fake_news: bool = False,
+) -> None:
+    """Run the full trading pipeline.
 
-class PipelineState(TypedDict):
-    ta_report: str
-    news_report: str
-    debate_result: dict
+    Args:
+        cutoff: Optional timestamp for backtesting (e.g. '2026-04-01 12:00:00').
+                When set, the TA agent only sees data up to this time and
+                market data is NOT refreshed.
+        run_label: Label for this run in the eval log (e.g. 'baseline', 'v2_longer_pm').
+        fake_news: If True, use hardcoded news data instead of calling Perplexity.
+    """
+    # 1. Fresh market data (skip in backtest mode — data already exists)
+    if not cutoff:
+        print("Refreshing market data...")
+        refresh_db()
 
+    # 2. Analysis agents
+    ta_output = run_ta_agent(cutoff=cutoff)
 
-# ---------------------------------------------------------------------------
-# LangGraph nodes
-# ---------------------------------------------------------------------------
+    print(f"\n{'=' * 60}")
+    print("TA STRUCTURED OUTPUT")
+    print(f"{'=' * 60}")
+    print(f"  Direction:   {ta_output.direction}")
+    print(f"  Price:       ${ta_output.current_price:,.0f}")
+    print(f"  Target:      ${ta_output.target_low:,.0f} – ${ta_output.target_high:,.0f}")
+    print(f"  Support:     ${ta_output.key_support:,.0f}")
+    print(f"  Resistance:  ${ta_output.key_resistance:,.0f}")
+    print(f"  Confidence:  {ta_output.confidence:.0%}")
 
-def ta_node(state: PipelineState) -> dict:
-    """Run the Technical Analysis agent."""
-    report = run_ta_agent()
-    return {"ta_report": report}
+    news_output = run_news_agent(fake=fake_news)
 
+    print(f"\n{'=' * 60}")
+    print("NEWS STRUCTURED OUTPUT")
+    print(f"{'=' * 60}")
+    print(f"  Direction:      {news_output.direction}")
+    print(f"  Price Target:   ${news_output.price_prediction:,.0f}")
+    print(f"  Key Catalyst:   {news_output.key_catalyst}")
+    print(f"  Confidence:     {news_output.confidence:.0%}")
 
-def news_node(state: PipelineState) -> dict:
-    """Run the News Research agent."""
-    report = run_news_agent()
-    return {"news_report": report}
-
-
-def debate_node(state: PipelineState) -> dict:
-    """Run the Bull vs Bear debate with Judge decision."""
+    # 3. Debate + PM decision
     print("\n" + "=" * 60)
     print("BTC/USDT Bull vs Bear Debate")
     print("=" * 60)
+    debate_result = run_debate(ta_output.report, news_output.report)
 
-    final_state = run_debate(
-        ta_report=state["ta_report"],
-        news_report=state["news_report"],
+    # 4. Log all predictions
+    init_eval_db()
+    log_run(
+        run_label=run_label,
+        ta=ta_output,
+        news=news_output,
+        bull=debate_result["bull"],
+        bear=debate_result["bear"],
+        pm=debate_result["pm"],
     )
-    return {"debate_result": final_state}
 
+    # 5. Show historical comparison
+    print_comparison()
 
-def summary_node(state: PipelineState) -> dict:
-    """Print post-run summary and analytics."""
-    final = state["debate_result"]
-
-    print(f"\n{'='*60}")
-    print("POST-RUN SUMMARY")
-    print(f"{'='*60}")
-    print(f"  Rounds completed: {final['current_round'] - 1}")
-    print(f"  Messages: {len(final['messages'])}")
-
-    for i, msg in enumerate(final["messages"], 1):
-        speaker = getattr(msg, "name", "Unknown")
-        preview = msg.content[:80].replace("\n", " ")
-        print(f"    {i}. [{speaker}] {preview}...")
-
-    print(f"\n{'='*60}")
-    print("STRUCTURED PREDICTIONS")
-    print(f"{'='*60}")
-    for pred in final["predictions"]:
-        stop = f"${pred.stop_loss:,.0f}" if pred.stop_loss else "N/A"
-        print(
-            f"  {pred.agent_name:>6}: {pred.direction:>7} @ "
-            f"target=${pred.target_price:,.0f}  stop={stop}  "
-            f"confidence={pred.confidence:.0%}  "
-            f"timeframe={pred.timeframe_hours}h"
-        )
-
-    print(f"\n{'='*60}")
-    print("HISTORICAL PERFORMANCE")
-    print(f"{'='*60}")
-    print_analytics()
-
-    return {}
-
-
-# ---------------------------------------------------------------------------
-# Build and run the pipeline graph
-# ---------------------------------------------------------------------------
-
-def build_pipeline() -> StateGraph:
-    graph = StateGraph(PipelineState)
-
-    graph.add_node("technical_analysis", ta_node)
-    graph.add_node("news_research", news_node)
-    graph.add_node("debate", debate_node)
-    graph.add_node("summary", summary_node)
-
-    # TA and News run sequentially (TA first to refresh market data),
-    # then debate consumes both reports, then summary.
-    graph.add_edge(START, "technical_analysis")
-    graph.add_edge("technical_analysis", "news_research")
-    graph.add_edge("news_research", "debate")
-    graph.add_edge("debate", "summary")
-    graph.add_edge("summary", END)
-
-    return graph.compile()
-
-
-def main() -> None:
-    init_tracking_db()
-    pipeline = build_pipeline()
-    pipeline.invoke({
-        "ta_report": "",
-        "news_report": "",
-        "debate_result": {},
-    })
+    # 6. Print final decision
+    pm = debate_result["pm"]
+    print(f"\n{'=' * 60}")
+    print(f"FINAL DECISION: {pm.decision}")
+    if pm.entry:
+        print(f"  Entry:      ${pm.entry:,.0f}")
+        print(f"  Stop Loss:  ${pm.stop_loss:,.0f}")
+        print(f"  Target:     ${pm.target:,.0f}")
+        print(f"  Size:       {pm.position_size}%")
+    print(f"  Confidence: {pm.confidence:.0%}")
+    print(f"  Winner:     {pm.winning_side}")
+    print(f"  Reason:     {pm.key_reason}")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
-    main()
+    use_fake_news = "--fake-news" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--fake-news"]
+    label = args[0] if len(args) > 0 else "live"
+    cutoff_arg = args[1] if len(args) > 1 else None
+    run_pipeline(cutoff=cutoff_arg, run_label=label, fake_news=use_fake_news)

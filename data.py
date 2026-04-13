@@ -9,7 +9,6 @@ Public API:
 import sqlite3
 
 import ccxt
-import numpy as np
 import pandas as pd
 
 DB_PATH = "trading.db"

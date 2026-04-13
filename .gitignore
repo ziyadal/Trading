@@ -12,5 +12,6 @@ wheels/
 # Environment secrets
 .env
 
-# Generated database
+# Generated databases
 trading.db
+eval.db
