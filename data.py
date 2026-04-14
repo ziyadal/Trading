@@ -118,6 +118,96 @@ def refresh_db(db_path: str = DB_PATH) -> None:
         conn.close()
 
 
+def backfill_db(days: int = 90, db_path: str = DB_PATH) -> None:
+    """Fetch historical BTC/USDT 5m candles and backfill the database.
+
+    Paginates through Binance's API to get up to `days` of history.
+    Indicators are computed on the full dataset so early values are accurate.
+
+    Usage:
+        uv run data.py --backfill        # 90 days (default)
+        uv run data.py --backfill 180    # 180 days
+    """
+    import time
+
+    exchange = ccxt.binance()
+    since_ms = exchange.milliseconds() - days * 24 * 60 * 60 * 1000
+    now_ms = exchange.milliseconds()
+    all_candles = []
+
+    print(f"Backfilling {days} days of BTC/USDT 5m data...")
+
+    while since_ms < now_ms:
+        candles = exchange.fetch_ohlcv(
+            "BTC/USDT", timeframe="5m", since=since_ms, limit=1000
+        )
+        if not candles:
+            break
+        all_candles.extend(candles)
+        since_ms = candles[-1][0] + 1
+        print(f"  Fetched {len(all_candles)} candles...", end="\r")
+        time.sleep(exchange.rateLimit / 1000)
+
+    print(f"  Fetched {len(all_candles)} candles total.     ")
+
+    if not all_candles:
+        print("No data fetched.")
+        return
+
+    df = pd.DataFrame(
+        all_candles, columns=["ts_ms", "open", "high", "low", "close", "volume"]
+    )
+    df["timestamp"] = (
+        pd.to_datetime(df["ts_ms"], unit="ms", utc=True)
+        .dt.strftime("%Y-%m-%d %H:%M:%S")
+    )
+    df = df.drop(columns=["ts_ms"])
+    df = df.drop_duplicates(subset="timestamp", keep="last")
+
+    # Compute indicators on the full dataset
+    df["rsi_14"] = _rsi(df["close"])
+    df["macd"], df["macd_signal"], df["macd_hist"] = _macd(df["close"])
+    df["bb_upper"], df["bb_mid"], df["bb_lower"] = _bbands(df["close"])
+    df["ema_50"] = _ema(df["close"])
+
+    df = df[COLUMNS]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {TABLE} (
+                timestamp   TEXT PRIMARY KEY,
+                open        REAL,
+                high        REAL,
+                low         REAL,
+                close       REAL,
+                volume      REAL,
+                rsi_14      REAL,
+                macd        REAL,
+                macd_signal REAL,
+                macd_hist   REAL,
+                bb_upper    REAL,
+                bb_mid      REAL,
+                bb_lower    REAL,
+                ema_50      REAL
+            )
+        """)
+        placeholders = ", ".join(["?"] * len(COLUMNS))
+        col_list = ", ".join(COLUMNS)
+        conn.executemany(
+            f"INSERT OR REPLACE INTO {TABLE} ({col_list}) VALUES ({placeholders})",
+            df.values.tolist(),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    print(
+        f"Backfilled {len(df)} candles: "
+        f"{df['timestamp'].iloc[0]} -> {df['timestamp'].iloc[-1]}"
+    )
+
+
 def load_df(db_path: str = DB_PATH) -> pd.DataFrame:
     """Return the full btc_ohlcv table as a pandas DataFrame.
 
@@ -134,7 +224,17 @@ def load_df(db_path: str = DB_PATH) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    print("Fetching BTC/USDT 5m candles from Binance...")
-    refresh_db()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--backfill":
+        days = int(sys.argv[2]) if len(sys.argv) > 2 else 90
+        backfill_db(days=days)
+    else:
+        print("Fetching BTC/USDT 5m candles from Binance...")
+        refresh_db()
+
     df = load_df()
-    print(f"Database built: {len(df)} candles.  Latest: {df['timestamp'].iloc[-1]}")
+    print(
+        f"Database: {len(df)} candles. "
+        f"Range: {df['timestamp'].iloc[0]} -> {df['timestamp'].iloc[-1]}"
+    )

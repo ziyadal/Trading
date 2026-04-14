@@ -82,18 +82,45 @@ NUM_REBUTTALS = 2
 # Debate runner
 # ---------------------------------------------------------------------------
 
-def run_debate(ta_report: str, news_report: str) -> dict:
+def run_debate(
+    ta_report: str,
+    news_report: str,
+    bull_prompt: str | None = None,
+    bear_prompt: str | None = None,
+    pm_prompt: str | None = None,
+    bull_model: str | None = None,
+    bear_model: str | None = None,
+    pm_model: str | None = None,
+    num_rebuttals: int = NUM_REBUTTALS,
+) -> dict:
     """Run the full bull vs bear debate and return structured outputs.
 
     Args:
         ta_report: Technical analysis report text.
         news_report: News research report text.
+        bull_prompt: Override bull system prompt (default: BULL_PROMPT).
+        bear_prompt: Override bear system prompt (default: BEAR_PROMPT).
+        pm_prompt: Override PM system prompt (default: PM_PROMPT).
+        bull_model: Override bull model (default: gpt-4.1-mini).
+        bear_model: Override bear model (default: gpt-4.1-mini).
+        pm_model: Override PM model (default: gpt-4.1-mini).
+        num_rebuttals: Number of rebuttal rounds (default: 2).
 
     Returns:
         Dict with keys: messages, bull, bear, pm
     """
-    oai_mini = ChatOpenAI(
-        model="gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")
+    _bull_prompt = bull_prompt or BULL_PROMPT
+    _bear_prompt = bear_prompt or BEAR_PROMPT
+    _pm_prompt = pm_prompt or PM_PROMPT
+
+    bull_llm = ChatOpenAI(
+        model=bull_model or "gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")
+    )
+    bear_llm = ChatOpenAI(
+        model=bear_model or "gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")
+    )
+    pm_llm = ChatOpenAI(
+        model=pm_model or "gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")
     )
 
     # Market context from TA and News
@@ -112,7 +139,7 @@ def run_debate(ta_report: str, news_report: str) -> dict:
 
     # Bull opens
     bull_messages = [
-        SystemMessage(content=BULL_PROMPT),
+        SystemMessage(content=_bull_prompt),
         HumanMessage(
             content=(
                 f"[MARKET DATA]\n{market_context}\n\n"
@@ -120,7 +147,7 @@ def run_debate(ta_report: str, news_report: str) -> dict:
             )
         ),
     ]
-    bull_resp = oai_mini.invoke(bull_messages)
+    bull_resp = bull_llm.invoke(bull_messages)
     messages.append(HumanMessage(content=bull_messages[-1].content))
     messages.append(AIMessage(content=f"[BULL OPENING]\n{bull_resp.content}"))
     print(f"\nBULL OPENING:\n{bull_resp.content}\n")
@@ -129,15 +156,15 @@ def run_debate(ta_report: str, news_report: str) -> dict:
     bear_prompt_msg = HumanMessage(
         content="Now present your opening bearish argument against a long BTC/USDT trade."
     )
-    bear_resp = oai_mini.invoke(
-        [SystemMessage(content=BEAR_PROMPT)] + messages + [bear_prompt_msg]
+    bear_resp = bear_llm.invoke(
+        [SystemMessage(content=_bear_prompt)] + messages + [bear_prompt_msg]
     )
     messages.append(bear_prompt_msg)
     messages.append(AIMessage(content=f"[BEAR OPENING]\n{bear_resp.content}"))
     print(f"\nBEAR OPENING:\n{bear_resp.content}\n")
 
     # --- Rebuttal rounds ---
-    for round_num in range(1, NUM_REBUTTALS + 1):
+    for round_num in range(1, num_rebuttals + 1):
         print("=" * 60)
         print(f"ROUND {round_num + 1}: COUNTER-ARGUMENTS")
         print("=" * 60)
@@ -152,8 +179,8 @@ def run_debate(ta_report: str, news_report: str) -> dict:
                 "to build on them. Keep your response under 200 words."
             )
         )
-        bull_resp = oai_mini.invoke(
-            [SystemMessage(content=BULL_PROMPT)] + messages + [bull_prompt_msg]
+        bull_resp = bull_llm.invoke(
+            [SystemMessage(content=_bull_prompt)] + messages + [bull_prompt_msg]
         )
         messages.append(bull_prompt_msg)
         messages.append(
@@ -171,8 +198,8 @@ def run_debate(ta_report: str, news_report: str) -> dict:
                 "to build on them. Keep your response under 200 words."
             )
         )
-        bear_resp = oai_mini.invoke(
-            [SystemMessage(content=BEAR_PROMPT)] + messages + [bear_prompt_msg]
+        bear_resp = bear_llm.invoke(
+            [SystemMessage(content=_bear_prompt)] + messages + [bear_prompt_msg]
         )
         messages.append(bear_prompt_msg)
         messages.append(
@@ -186,9 +213,9 @@ def run_debate(ta_report: str, news_report: str) -> dict:
     print("=" * 60)
 
     # Bull final — structured output
-    bull_structured = oai_mini.with_structured_output(BullOutput)
+    bull_structured = bull_llm.with_structured_output(BullOutput)
     bull_final = bull_structured.invoke(
-        [SystemMessage(content=BULL_PROMPT)]
+        [SystemMessage(content=_bull_prompt)]
         + messages
         + [
             HumanMessage(
@@ -207,9 +234,9 @@ def run_debate(ta_report: str, news_report: str) -> dict:
     print(f"  Key argument: {bull_final.key_argument}")
 
     # Bear final
-    bear_structured = oai_mini.with_structured_output(BearOutput)
+    bear_structured = bear_llm.with_structured_output(BearOutput)
     bear_final = bear_structured.invoke(
-        [SystemMessage(content=BEAR_PROMPT)]
+        [SystemMessage(content=_bear_prompt)]
         + messages
         + [
             HumanMessage(
@@ -227,8 +254,8 @@ def run_debate(ta_report: str, news_report: str) -> dict:
     )
     print(f"  Key argument: {bear_final.key_argument}")
 
-    # PM decision — same model, structured output
-    pm_structured = oai_mini.with_structured_output(PMOutput)
+    # PM decision — structured output
+    pm_structured = pm_llm.with_structured_output(PMOutput)
     bull_summary = (
         f"[BULL FINAL NUMBERS] entry=${bull_final.entry:,.0f} "
         f"stop=${bull_final.stop_loss:,.0f} target=${bull_final.target:,.0f} "
@@ -240,7 +267,7 @@ def run_debate(ta_report: str, news_report: str) -> dict:
         f"confidence={bear_final.confidence:.0%}"
     )
     pm_final = pm_structured.invoke(
-        [SystemMessage(content=PM_PROMPT)]
+        [SystemMessage(content=_pm_prompt)]
         + messages
         + [
             HumanMessage(

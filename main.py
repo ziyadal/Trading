@@ -52,6 +52,11 @@ def run_pipeline(
     print(f"  Resistance:  ${ta_output.key_resistance:,.0f}")
     print(f"  Confidence:  {ta_output.confidence:.0%}")
 
+    print(f"\n{'=' * 60}")
+
+    print(f"TA REPORT:  {ta_output.report}")
+
+
     news_output = run_news_agent(fake=fake_news)
 
     print(f"\n{'=' * 60}")

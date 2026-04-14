@@ -81,6 +81,11 @@ After collecting evidence, output the report in this format:
 ---
 """
 
+TA_USER_PROMPT = (
+    "Analyse the BTC/USDT 5m data and produce a technical analysis report "
+    "with a 1-week price target."
+)
+
 
 # Tool factory — cutoff filters out future data for backtesting
 def make_query_tool(cutoff: str | None = None):
@@ -132,32 +137,38 @@ def make_query_tool(cutoff: str | None = None):
     return query_db
 
 
-def run_ta_agent(cutoff: str | None = None) -> TAOutput:
+def run_ta_agent(
+    cutoff: str | None = None,
+    system_prompt: str | None = None,
+    user_prompt: str | None = None,
+    model_name: str | None = None,
+) -> TAOutput:
     """Run the TA agent against trading.db.
 
     Args:
         cutoff: Optional timestamp (e.g. '2026-04-01 12:00:00').
                 When set, the agent only sees data up to this time (for backtesting).
+        system_prompt: Override the default TA system prompt.
+        user_prompt: Override the default user message.
+        model_name: Override the default model (gpt-4.1-mini).
 
     Returns:
         TAOutput with full report + structured prediction fields.
     """
+    _prompt = system_prompt or TA_SYSTEM_PROMPT
+    _user = user_prompt or TA_USER_PROMPT
+    _model = model_name or "gpt-4.1-mini"
 
     model = ChatOpenAI(
-        model="gpt-4.1-mini",
+        model=_model,
         api_key=os.getenv("OPENAI_API_KEY"),
     )
 
     agent = create_agent(
         model=model,
         tools=[make_query_tool(cutoff)],
-        system_prompt=TA_SYSTEM_PROMPT,
+        system_prompt=_prompt,
         response_format=TAOutput,
-    )
-
-    message = (
-        "Analyse the BTC/USDT 5m data and produce a technical analysis report "
-        "with a 1-week price target."
     )
 
     print("=" * 60)
@@ -167,7 +178,7 @@ def run_ta_agent(cutoff: str | None = None) -> TAOutput:
     print("=" * 60)
 
     response = agent.invoke({
-        "messages": [("user", message)]
+        "messages": [("user", _user)]
     })
 
     return response["structured_response"]

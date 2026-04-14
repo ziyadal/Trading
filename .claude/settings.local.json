@@ -17,7 +17,12 @@
       "WebFetch(domain:codecut.ai)",
       "Bash(uv run:*)",
       "Bash(rm:*)",
-      "Bash(ls -la *.py)"
+      "Bash(ls -la *.py)",
+      "Bash(sqlite3 eval.db \".schema\")",
+      "Bash(sqlite3 eval.db \"SELECT COUNT\\(*\\) as total_rows FROM eval_log\")",
+      "Bash(sqlite3 eval.db \"SELECT DISTINCT run_label, agent, direction, confidence FROM eval_log ORDER BY run_label\")",
+      "Bash(python -c \"import sqlite3; conn=sqlite3.connect\\('eval.db'\\); print\\(conn.execute\\('SELECT COUNT\\(*\\) FROM eval_log'\\).fetchone\\(\\)\\); [print\\(r\\) for r in conn.execute\\('SELECT DISTINCT run_label, agent, direction, confidence FROM eval_log ORDER BY run_label'\\).fetchall\\(\\)]\")",
+      "Bash(python -c ':*)"
     ]
   }
 }

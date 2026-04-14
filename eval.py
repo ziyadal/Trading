@@ -74,6 +74,60 @@ def log_run(
     return run_id
 
 
+def init_harness_table(db_path: str = EVAL_DB) -> None:
+    """Create the harness_results table if it doesn't exist."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS harness_results (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_label       TEXT NOT NULL,
+            run_timestamp   TEXT NOT NULL,
+            week            INTEGER NOT NULL,
+            cutoff          TEXT NOT NULL,
+            agent           TEXT NOT NULL,
+            direction       TEXT,
+            target          REAL,
+            confidence      REAL,
+            price_at_cutoff REAL,
+            actual_price    REAL,
+            direction_correct INTEGER,
+            target_error    REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def log_harness_results(
+    results: list,
+    run_label: str,
+    db_path: str = EVAL_DB,
+) -> None:
+    """Save harness TestResult objects to the harness_results table."""
+    init_harness_table(db_path)
+    timestamp = datetime.now(timezone.utc).isoformat()
+
+    conn = sqlite3.connect(db_path)
+    for r in results:
+        conn.execute(
+            """INSERT INTO harness_results
+               (run_label, run_timestamp, week, cutoff, agent,
+                direction, target, confidence, price_at_cutoff,
+                actual_price, direction_correct, target_error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_label, timestamp, r.week, r.cutoff, r.agent,
+                r.direction, r.target, r.confidence, r.price_at_cutoff,
+                r.actual_price,
+                None if r.direction_correct is None else int(r.direction_correct),
+                r.target_error,
+            ),
+        )
+    conn.commit()
+    conn.close()
+    print(f"\nSaved {len(results)} harness results to eval.db (label: {run_label})")
+
+
 def print_comparison(db_path: str = EVAL_DB) -> None:
     """Print a comparison of scores across run labels."""
     conn = sqlite3.connect(db_path)
