@@ -13,34 +13,35 @@ Uses **uv** for dependency management (Python 3.12):
 ```bash
 uv sync                                          # Install dependencies
 uv run main.py                                   # Live run (fetches fresh data)
-uv run main.py "my_label"                        # Live run with custom eval label
-uv run main.py "backtest_v1" "2026-04-01 12:00:00"  # Backtest with cutoff timestamp
+uv run main.py --fake-news                       # Live run with fake news (skip Perplexity)
 uv run data.py                                   # Refresh market data only
+uv run data.py --backfill 90                     # Backfill 90 days of history
 uv run ta_agent.py                               # Run TA agent standalone
 uv run pytest                                    # Run tests
+uv run pyright                                   # Type check
 ```
 
 ## Architecture
 
 The pipeline runs sequentially in `main.py:run_pipeline()`:
 
-1. **Data ingestion** (`data.py`): Fetches 2 days of BTC/USDT 5m candles from Binance via CCXT, computes indicators (RSI-14, MACD, Bollinger Bands, EMA-50), upserts into `trading.db` SQLite.
+1. **Data ingestion** (`data.py`): Fetches 2 days of BTC/USDT 5m candles from Binance via CCXT, computes indicators (RSI-14, MACD, Bollinger Bands, EMA-50), upserts into `trading.db` SQLite. Also supports `--backfill` for historical data.
 
 2. **Analysis agents** (run in sequence):
-   - `ta_agent.py`: ReAct agent with a `query_db` SQL tool against `trading.db`. Uses `gpt-4.1` with `response_format=TAOutput` for structured output. Queries use LIMIT clauses (100 rows for full-table scans, 50 for filtered) to stay within API token limits. Produces a 1-week price target with volume confirmation. Supports backtest mode via a `cutoff` parameter that transparently filters the SQL table.
-   - `news_agent.py`: Two-phase — Perplexity `sonar-deep-research` for raw research, then `gpt-4.1-mini` with `.with_structured_output(NewsOutput)` for structured assessment.
+   - `ta_agent.py`: Agent with a `query_db` SQL tool against `trading.db`. Uses `gpt-4.1-mini` with `response_format=TAOutput` for structured output. Queries use LIMIT clauses to stay within API token limits. Produces a 1-week price target with volume confirmation. Supports a `cutoff` parameter for backtesting (used by the harness).
+   - `news_agent.py`: Single-phase — Perplexity `sonar-pro` with `response_format` (JSON Schema) returns a structured `NewsOutput` directly. No separate OpenAI call.
 
-3. **Debate** (`debate.py`): Bull and Bear agents (`gpt-4.1-mini`) exchange opening arguments + 2 rebuttal rounds (with escalation — each round must introduce new arguments). PM sees the full transcript plus structured bull/bear numbers before deciding. Hard rule: R:R must be >= 1:1 or PM goes NEUTRAL.
+3. **Debate** (`debate.py`): Bull and Bear agents (`gpt-4.1-mini`) make independent opening arguments (neither sees the other's opening), then 2 rebuttal rounds with full transcript visibility (each round must introduce new arguments). PM sees the full transcript plus structured bull/bear numbers before deciding. Hard rule: R:R must be >= 1:1 or PM goes NEUTRAL.
 
-4. **Eval logging** (`eval.py`): Logs all agent predictions (direction, targets, confidence) to `eval.db` SQLite for cross-run comparison.
+4. **Evaluation** (`harness.py`): The harness runs the pipeline across multiple historical cutoff dates, scores predictions against actual prices, and logs results to `eval.db`.
 
 All structured outputs are Pydantic models in `models.py`: `TAOutput`, `NewsOutput`, `BullOutput`, `BearOutput`, `PMOutput`.
 
 ## Key Patterns
 
-- **Structured output**: Debate rounds use free-text `create_agent`; final assessments use `ChatOpenAI.with_structured_output(PydanticModel)` directly. The TA agent uses `response_format=` on `create_agent`.
-- **Backtest mode**: Pass a cutoff timestamp to `run_pipeline()` or via CLI arg. `ta_agent.py` replaces `btc_ohlcv` in SQL queries with a filtered subquery. Data refresh is skipped in backtest mode.
-- **Two databases**: `trading.db` = market data (OHLCV + indicators), `eval.db` = prediction logs.
+- **Structured output**: Debate rounds use free-text chat; final assessments use `ChatOpenAI.with_structured_output(PydanticModel)` directly. The TA agent uses `response_format=` on `create_agent`.
+- **Harness backtesting**: The harness (`harness.py`) passes a cutoff timestamp to `ta_agent.py`, which replaces `btc_ohlcv` in SQL queries with a filtered subquery so the agent only sees data up to that time.
+- **Two databases**: `trading.db` = market data (OHLCV + indicators), `eval.db` = harness evaluation results.
 
 ## Key Constraints
 

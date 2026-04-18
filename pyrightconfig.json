@@ -1,0 +1,8 @@
+{
+    "exclude": [".venv"],
+    "typeCheckingMode": "basic",
+    "reportAttributeAccessIssue": "error",
+    "reportReturnType": false,
+    "reportArgumentType": false,
+    "reportOperatorIssue": false
+}

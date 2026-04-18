@@ -204,7 +204,7 @@ def backfill_db(days: int = 90, db_path: str = DB_PATH) -> None:
 
     print(
         f"Backfilled {len(df)} candles: "
-        f"{df['timestamp'].iloc[0]} -> {df['timestamp'].iloc[-1]}"
+        f"{df['timestamp'].iloc[0]} -> {df['timestamp'].iloc[-1]}"  # type: ignore[reportAttributeAccessIssue]
     )
 
 
