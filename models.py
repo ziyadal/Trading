@@ -24,6 +24,15 @@ class TAOutput(BaseModel):
     confidence: float = Field(ge=0, le=1, description="Confidence in prediction 0.0-1.0")
     key_support: float = Field(description="Key support level")
     key_resistance: float = Field(description="Key resistance level")
+    invalidation_level: float = Field(
+        description="Price at which the directional thesis is invalidated"
+    )
+    regime: Literal[
+        "TRENDING_UP", "TRENDING_DOWN", "RANGE", "SQUEEZE", "MIXED"
+    ] = Field(description="Current market regime on the analysis timeframe (4h)")
+    devils_advocate: str = Field(
+        description="Single strongest piece of evidence against the chosen verdict"
+    )
 
 
 class NewsOutput(BaseModel):
@@ -64,7 +73,8 @@ class PMOutput(BaseModel):
     """Portfolio manager final decision."""
 
     report: str = Field(
-        description="Full PM evaluation covering debate dynamics, data merit, and risk analysis"
+        default="",
+        description="Full PM evaluation covering debate dynamics, data merit, and risk analysis",
     )
     decision: Literal["BULLISH", "BEARISH", "NEUTRAL"] = Field(description="Final trading decision")
     entry: float | None = Field(default=None, description="Entry price, null if NEUTRAL")

@@ -1,25 +1,26 @@
 """
 news_agent.py — BTC news research agent.
 
-Single-phase agent using Perplexity's structured output:
-  Perplexity sonar-pro researches the latest BTC news and returns a structured
+Single-phase agent using Perplexity's structured output (via OpenRouter):
+  perplexity/sonar-pro researches the latest BTC news and returns a structured
   NewsOutput directly via response_format (JSON Schema). No separate OpenAI call.
 """
 
-import os
 from datetime import date
 
-from openai import OpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 
+from llm import make_llm
 from models import NewsOutput
 from prompts.news import FAKE_RESEARCH, NEWS_SYSTEM_PROMPT, NEWS_USER_PROMPT
 
 
-def run_news_agent(fake: bool = False) -> NewsOutput:
-    """Run BTC news research via Perplexity with structured output.
+def run_news_agent(fake: bool = False, model_name: str | None = None) -> NewsOutput:
+    """Run BTC news research via Perplexity (through OpenRouter) with structured output.
 
     Args:
         fake: If True, skip the Perplexity call and return hardcoded data.
+        model_name: Override the default model (perplexity/sonar-pro).
 
     Returns:
         NewsOutput with full report + structured prediction fields.
@@ -44,26 +45,13 @@ def run_news_agent(fake: bool = False) -> NewsOutput:
     print("BTC News Research Agent")
     print("=" * 60)
 
-    client = OpenAI(
-        api_key=os.getenv("PERPLEXITY_API_KEY"),
-        base_url="https://api.perplexity.ai",
-    )
+    _model = model_name or "perplexity/sonar-pro"
+    llm = make_llm(_model).with_structured_output(NewsOutput, method="json_schema")
 
-    response = client.chat.completions.create(
-        model="sonar-pro",
-        messages=[
-            {"role": "system", "content": NEWS_SYSTEM_PROMPT.format(date=today)},
-            {"role": "user", "content": NEWS_USER_PROMPT.format(today=today)},
-        ],
-        response_format={
-            "type": "json_schema",
-            "json_schema": {"schema": NewsOutput.model_json_schema()},
-        },
-    )
-
-    content = response.choices[0].message.content
-    assert content is not None, "Perplexity returned empty response"
-    result = NewsOutput.model_validate_json(content)
+    result: NewsOutput = llm.invoke([
+        SystemMessage(content=NEWS_SYSTEM_PROMPT.format(date=today)),
+        HumanMessage(content=NEWS_USER_PROMPT.format(today=today)),
+    ])
 
     print(f"\n{result.report}\n")
     return result
