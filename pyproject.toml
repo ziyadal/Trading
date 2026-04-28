@@ -16,4 +16,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "pytest>=8.0.0",
     "pyright>=1.1.408",
+    "langchain-community>=0.4.1",
+    "langchain-openrouter>=0.2.1",
+    "langgraph-checkpoint-sqlite>=2.0.0",
 ]

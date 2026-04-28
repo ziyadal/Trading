@@ -1,77 +1,68 @@
 """
-debate.py — Bull, Bear, and Portfolio Manager agents for BTC/USDT trading debate.
+debate.py — Bull and Bear debate (PM moved to pm.py).
 
 Flow:
   1. Bull and Bear opening arguments (independent — neither sees the other's opening)
   2. 2 rounds of counter-arguments (both see full transcript)
   3. Bull structured final assessment
   4. Bear structured final assessment
-  5. PM structured decision (sees entire transcript)
+
+PM evaluation is now a separate step (pm.py) so it gets its own checkpoint /
+rollback boundary in the LangGraph pipeline.
 """
 
-import os
-
 from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
+from langchain_community.callbacks import get_openai_callback
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from models import BearOutput, BullOutput, PMOutput
-from prompts.debate import BEAR_PROMPT, BULL_PROMPT, NUM_REBUTTALS, PM_PROMPT
+from llm import make_llm
+from models import BearOutput, BullOutput
+from prompts.debate import BEAR_PROMPT, BULL_PROMPT, NUM_REBUTTALS
+from usage import AgentUsage, add_callback
 
-
-# ---------------------------------------------------------------------------
-# Debate runner
-# ---------------------------------------------------------------------------
 
 def run_debate(
     ta_report: str,
     news_report: str,
     bull_prompt: str | None = None,
     bear_prompt: str | None = None,
-    pm_prompt: str | None = None,
     bull_model: str | None = None,
     bear_model: str | None = None,
-    pm_model: str | None = None,
     num_rebuttals: int = NUM_REBUTTALS,
 ) -> dict:
-    """Run the full bull vs bear debate and return structured outputs.
+    """Run bull vs bear debate (openings + rebuttals + final structured assessments).
 
     Args:
         ta_report: Technical analysis report text.
         news_report: News research report text.
         bull_prompt: Override bull system prompt (default: BULL_PROMPT).
         bear_prompt: Override bear system prompt (default: BEAR_PROMPT).
-        pm_prompt: Override PM system prompt (default: PM_PROMPT).
         bull_model: Override bull model (default: gpt-4.1-mini).
         bear_model: Override bear model (default: gpt-4.1-mini).
-        pm_model: Override PM model (default: gpt-4.1-mini).
         num_rebuttals: Number of rebuttal rounds (default: 2).
 
     Returns:
-        Dict with keys: messages, bull, bear, pm
+        Dict with keys: messages, bull, bear, usage (bull_usage + bear_usage).
     """
     _bull_prompt = bull_prompt or BULL_PROMPT
     _bear_prompt = bear_prompt or BEAR_PROMPT
-    _pm_prompt = pm_prompt or PM_PROMPT
 
-    bull_llm = ChatOpenAI(
-        model=bull_model or "gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")
-    )
-    bear_llm = ChatOpenAI(
-        model=bear_model or "gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")
-    )
-    pm_llm = ChatOpenAI(
-        model=pm_model or "gpt-4.1-mini", api_key=os.getenv("OPENAI_API_KEY")
-    )
+    _bull_model = bull_model or "openai/gpt-4.1-mini"
+    _bear_model = bear_model or "openai/gpt-4.1-mini"
 
-    # Market context from TA and News
+    bull_llm = make_llm(_bull_model)
+    bear_llm = make_llm(_bear_model)
+
+    # Per-agent usage accumulators. Bull/bear never use tools in the debate.
+    bull_usage = AgentUsage(agent="bull", model=_bull_model)
+    bear_usage = AgentUsage(agent="bear", model=_bear_model)
+
     market_context = (
-        f"[TECHNICAL ANALYSIS REPORT]\n{ta_report}\n\n"
-        f"[NEWS RESEARCH REPORT]\n{news_report}"
+        f"<TA_Report>\n{ta_report}\n</TA_Report>\n\n"
+        f"<News_Report>\n{news_report}\n</News_Report>"
     )
 
-    # Shared transcript (both sides see everything after openings)
-    messages: list = []
+    messages: list[BaseMessage] = []
 
     # --- Round 1: Opening arguments (independent — neither sees the other) ---
     print("\n" + "=" * 60)
@@ -83,21 +74,22 @@ def run_debate(
         "Present your opening argument for BTC/USDT based on the data above."
     )
 
-    # Bull opens (sees only market data)
-    bull_resp = bull_llm.invoke([
-        SystemMessage(content=_bull_prompt),
-        HumanMessage(content=open_prompt),
-    ])
+    with get_openai_callback() as cb:
+        bull_resp = bull_llm.invoke([
+            SystemMessage(content=_bull_prompt),
+            HumanMessage(content=open_prompt),
+        ])
+    add_callback(bull_usage, cb)
     print(f"\nBULL OPENING:\n{bull_resp.content}\n")
 
-    # Bear opens independently (sees only market data, NOT bull's opening)
-    bear_resp = bear_llm.invoke([
-        SystemMessage(content=_bear_prompt),
-        HumanMessage(content=open_prompt),
-    ])
+    with get_openai_callback() as cb:
+        bear_resp = bear_llm.invoke([
+            SystemMessage(content=_bear_prompt),
+            HumanMessage(content=open_prompt),
+        ])
+    add_callback(bear_usage, cb)
     print(f"\nBEAR OPENING:\n{bear_resp.content}\n")
 
-    # Combine both openings into the shared transcript for rebuttals
     messages.append(HumanMessage(content=open_prompt))
     messages.append(AIMessage(content=f"[BULL OPENING]\n{bull_resp.content}"))
     messages.append(AIMessage(content=f"[BEAR OPENING]\n{bear_resp.content}"))
@@ -108,7 +100,6 @@ def run_debate(
         print(f"ROUND {round_num + 1}: COUNTER-ARGUMENTS")
         print("=" * 60)
 
-        # Bull counters
         bull_prompt_msg = HumanMessage(
             content=(
                 f"Counter-argument round {round_num}: Bull, respond to the bear's "
@@ -118,16 +109,17 @@ def run_debate(
                 "to build on them. Keep your response under 200 words."
             )
         )
-        bull_resp = bull_llm.invoke(
-            [SystemMessage(content=_bull_prompt)] + messages + [bull_prompt_msg]
-        )
+        with get_openai_callback() as cb:
+            bull_resp = bull_llm.invoke(
+                [SystemMessage(content=_bull_prompt)] + messages + [bull_prompt_msg]
+            )
+        add_callback(bull_usage, cb)
         messages.append(bull_prompt_msg)
         messages.append(
             AIMessage(content=f"[BULL REBUTTAL {round_num}]\n{bull_resp.content}")
         )
         print(f"\nBULL REBUTTAL {round_num}:\n{bull_resp.content}\n")
 
-        # Bear counters
         bear_prompt_msg = HumanMessage(
             content=(
                 f"Counter-argument round {round_num}: Bear, respond to the bull's "
@@ -137,9 +129,11 @@ def run_debate(
                 "to build on them. Keep your response under 200 words."
             )
         )
-        bear_resp = bear_llm.invoke(
-            [SystemMessage(content=_bear_prompt)] + messages + [bear_prompt_msg]
-        )
+        with get_openai_callback() as cb:
+            bear_resp = bear_llm.invoke(
+                [SystemMessage(content=_bear_prompt)] + messages + [bear_prompt_msg]
+            )
+        add_callback(bear_usage, cb)
         messages.append(bear_prompt_msg)
         messages.append(
             AIMessage(content=f"[BEAR REBUTTAL {round_num}]\n{bear_resp.content}")
@@ -151,24 +145,25 @@ def run_debate(
     print("FINAL STRUCTURED ASSESSMENTS")
     print("=" * 60)
 
-    # Bull final — structured output via create_agent(response_format=)
     bull_agent = create_agent(
         model=bull_llm,
         tools=[],
         system_prompt=_bull_prompt,
         response_format=BullOutput,
     )
-    bull_final: BullOutput = bull_agent.invoke({
-        "messages": messages
-        + [
-            HumanMessage(
-                content=(
-                    "Based on the complete debate, provide your final structured "
-                    "bullish assessment with entry, stop loss, target, and confidence."
+    with get_openai_callback() as cb:
+        bull_final: BullOutput = bull_agent.invoke({
+            "messages": messages
+            + [
+                HumanMessage(
+                    content=(
+                        "Based on the complete debate, provide your final structured "
+                        "bullish assessment with entry, stop loss, target, and confidence."
+                    )
                 )
-            )
-        ]
-    })["structured_response"]
+            ]
+        })["structured_response"]
+    add_callback(bull_usage, cb)
     print(
         f"\nBULL FINAL: entry=${bull_final.entry:,.0f} "
         f"target=${bull_final.target:,.0f} stop=${bull_final.stop_loss:,.0f} "
@@ -176,24 +171,25 @@ def run_debate(
     )
     print(f"  Key argument: {bull_final.key_argument}")
 
-    # Bear final — structured output via create_agent(response_format=)
     bear_agent = create_agent(
         model=bear_llm,
         tools=[],
         system_prompt=_bear_prompt,
         response_format=BearOutput,
     )
-    bear_final: BearOutput = bear_agent.invoke({
-        "messages": messages
-        + [
-            HumanMessage(
-                content=(
-                    "Based on the complete debate, provide your final structured "
-                    "bearish assessment with entry, stop loss, target, and confidence."
+    with get_openai_callback() as cb:
+        bear_final: BearOutput = bear_agent.invoke({
+            "messages": messages
+            + [
+                HumanMessage(
+                    content=(
+                        "Based on the complete debate, provide your final structured "
+                        "bearish assessment with entry, stop loss, target, and confidence."
+                    )
                 )
-            )
-        ]
-    })["structured_response"]
+            ]
+        })["structured_response"]
+    add_callback(bear_usage, cb)
     print(
         f"\nBEAR FINAL: entry=${bear_final.entry:,.0f} "
         f"target=${bear_final.target:,.0f} stop=${bear_final.stop_loss:,.0f} "
@@ -201,49 +197,12 @@ def run_debate(
     )
     print(f"  Key argument: {bear_final.key_argument}")
 
-    # PM decision — structured output via create_agent(response_format=)
-    pm_agent = create_agent(
-        model=pm_llm,
-        tools=[],
-        system_prompt=_pm_prompt,
-        response_format=PMOutput,
-    )
-    bull_summary = (
-        f"[BULL FINAL NUMBERS] entry=${bull_final.entry:,.0f} "
-        f"stop=${bull_final.stop_loss:,.0f} target=${bull_final.target:,.0f} "
-        f"confidence={bull_final.confidence:.0%}"
-    )
-    bear_summary = (
-        f"[BEAR FINAL NUMBERS] entry=${bear_final.entry:,.0f} "
-        f"stop=${bear_final.stop_loss:,.0f} target=${bear_final.target:,.0f} "
-        f"confidence={bear_final.confidence:.0%}"
-    )
-    pm_final: PMOutput = pm_agent.invoke({
-        "messages": messages
-        + [
-            HumanMessage(
-                content=(
-                    "You have reviewed the complete bull vs bear debate transcript above.\n\n"
-                    f"{bull_summary}\n{bear_summary}\n\n"
-                    "Now perform your full evaluation and render your final trading decision. "
-                    "Calculate the risk:reward ratio explicitly for any trade you consider."
-                )
-            )
-        ]
-    })["structured_response"]
-
-    entry_str = f"${pm_final.entry:,.0f}" if pm_final.entry else "N/A"
-    target_str = f"${pm_final.target:,.0f}" if pm_final.target else "N/A"
-    stop_str = f"${pm_final.stop_loss:,.0f}" if pm_final.stop_loss else "N/A"
-    print(
-        f"\nPM DECISION: {pm_final.decision} entry={entry_str} "
-        f"target={target_str} stop={stop_str} "
-        f"confidence={pm_final.confidence:.0%} winner={pm_final.winning_side}"
-    )
-
     return {
         "messages": messages,
         "bull": bull_final,
         "bear": bear_final,
-        "pm": pm_final,
+        "usage": {
+            "bull": bull_usage,
+            "bear": bear_usage,
+        },
     }
