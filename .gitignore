@@ -16,3 +16,9 @@ wheels/
 trading.db
 eval.db
 checkpoints.db
+
+# Harness run logs
+*.log
+
+# Scratch notebook
+test.ipynb

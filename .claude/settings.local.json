@@ -28,7 +28,20 @@
       "Bash(wc -l *.py)",
       "Bash(ls \"/c/Users/Ziyad/Desktop/AI Agents works/Trading\"/test*.py)",
       "Bash(sqlite3 trading.db \"SELECT COUNT\\(*\\) FROM btc_ohlcv\")",
-      "Bash(ls *)"
+      "Bash(ls *)",
+      "Bash(python -c ' *)",
+      "Bash(sqlite3 *)",
+      "mcp__docs-langchain__query_docs_filesystem_docs_by_lang_chain",
+      "Bash(tee /tmp/smoke_test.log)",
+      "Bash(uv add *)",
+      "Bash(tee /tmp/smoke_test2.log)",
+      "Bash(tee /tmp/smoke_test3.log)",
+      "Bash(tee /tmp/smoke_test4.log)",
+      "Bash(tee harness_1wk_full.log)",
+      "Bash(uv sync *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }
