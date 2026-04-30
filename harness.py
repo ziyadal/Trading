@@ -45,6 +45,7 @@ Usage (notebook or script):
     )
 """
 
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -58,6 +59,9 @@ from ta_agent import run_ta_agent
 from usage import AgentUsage
 
 EVAL_DB = "eval.db"
+
+# Annualization factor for Sharpe — weekly cutoffs => sqrt(52).
+WEEKS_PER_YEAR = 52
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +97,9 @@ class TestResult:
     stop_loss: float | None = None
     key_point: str | None = None       # bull/bear key_argument or PM key_reason
     winning_side: str | None = None    # PM only
+    # Realized 1-week return if you'd taken this trade (long for BULLISH,
+    # short for BEARISH, flat 0 for NEUTRAL). None when can't be scored.
+    realized_return: float | None = None
     # Per-agent LLM usage for this cutoff
     model: str | None = None
     tool_calls: int = 0
@@ -166,21 +173,151 @@ def _score_direction(
         return pct_change < 0.02
 
 
+def _realized_return(
+    direction: str, price_before: float, price_after: float
+) -> float:
+    """Realized 1-week return if you'd traded this signal at full size.
+
+    BULLISH = long: profit when price rises.
+    BEARISH = short: profit when price falls.
+    NEUTRAL = flat: 0% (capital sits in cash for the week).
+    """
+    weekly_change = (price_after - price_before) / price_before
+    if direction in ("BULLISH", "BUY", "UP"):
+        return weekly_change
+    if direction in ("BEARISH", "SELL", "DOWN"):
+        return -weekly_change
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
+# Risk/return metric computation
+# ---------------------------------------------------------------------------
+
+def _max_drawdown(returns: list[float]) -> float:
+    """Largest peak-to-trough loss on the equity curve formed by *returns*.
+
+    Equity starts at 1.0; we compound (1+r) and track running peak. Returned
+    as a positive fraction (e.g. 0.25 means a 25% drawdown).
+    """
+    equity = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for r in returns:
+        equity *= (1 + r)
+        peak = max(peak, equity)
+        dd = (peak - equity) / peak
+        max_dd = max(max_dd, dd)
+    return max_dd
+
+
+def _compute_run_metrics(results: list[TestResult]) -> list[dict]:
+    """Compute per-agent risk/return metrics for one harness run.
+
+    Builds one row per real agent (ta/bull/bear/pm) plus a synthetic
+    'buy_hold' row that simulates always being long over the same cutoffs —
+    this is the baseline a PM-gated strategy must beat on a risk-adjusted basis.
+
+    All returns assumed weekly; Sharpe is annualized by sqrt(52).
+    """
+    agents = sorted(set(r.agent for r in results))
+
+    # Buy-and-hold uses any one agent's price observations (same prices per
+    # cutoff across agents). Pick the first agent that has scoreable data.
+    bh_returns: list[float] = []
+    for a in agents:
+        priced = [
+            r for r in results
+            if r.agent == a
+            and r.price_at_cutoff is not None
+            and r.actual_price is not None
+        ]
+        if priced:
+            bh_returns = [
+                (r.actual_price - r.price_at_cutoff) / r.price_at_cutoff  # type: ignore[operator]
+                for r in priced
+            ]
+            break
+
+    metric_rows: list[dict] = []
+    for agent in agents + (["buy_hold"] if bh_returns else []):
+        returns: list[float]
+        committed_returns: list[float]
+        if agent == "buy_hold":
+            returns = bh_returns
+            committed_returns = bh_returns  # always in-market
+            wins = sum(1 for r in committed_returns if r > 0)
+        else:
+            scored = [
+                r for r in results
+                if r.agent == agent and r.realized_return is not None
+            ]
+            if not scored:
+                continue
+            returns = [r.realized_return for r in scored if r.realized_return is not None]
+            committed_returns = [
+                r.realized_return for r in scored
+                if r.realized_return is not None
+                and r.direction not in ("NEUTRAL", "HOLD", None, "")
+            ]
+            wins = sum(
+                1 for r in scored
+                if r.direction not in ("NEUTRAL", "HOLD", None, "")
+                and r.direction_correct
+            )
+
+        if not returns:
+            continue
+
+        n = len(returns)
+        mean_r = sum(returns) / n
+        if n > 1:
+            variance = sum((r - mean_r) ** 2 for r in returns) / (n - 1)
+            std_r = math.sqrt(variance)
+        else:
+            std_r = 0.0
+
+        cumulative = 1.0
+        for r in returns:
+            cumulative *= (1 + r)
+        cumulative -= 1
+
+        sharpe = (mean_r / std_r) * math.sqrt(WEEKS_PER_YEAR) if std_r > 0 else None
+        max_dd = _max_drawdown(returns)
+        committed_n = len(committed_returns)
+        hit_rate = (wins / committed_n) if committed_n else None
+
+        metric_rows.append({
+            "agent": agent,
+            "total_weeks": n,
+            "committed_weeks": committed_n,
+            "committed_hit_rate": hit_rate,
+            "cumulative_return": cumulative,
+            "mean_return": mean_r,
+            "std_return": std_r,
+            "sharpe_ratio": sharpe,
+            "max_drawdown": max_dd,
+        })
+
+    return metric_rows
+
+
 # ---------------------------------------------------------------------------
 # Eval logging
 # ---------------------------------------------------------------------------
 
 _HARNESS_EXTRA_COLS = (
-    ("report",        "TEXT"),
-    ("entry",         "REAL"),
-    ("stop_loss",     "REAL"),
-    ("key_point",     "TEXT"),
-    ("winning_side",  "TEXT"),
-    ("model",         "TEXT"),
-    ("tool_calls",    "INTEGER DEFAULT 0"),
-    ("input_tokens",  "INTEGER DEFAULT 0"),
-    ("output_tokens", "INTEGER DEFAULT 0"),
-    ("cost",          "REAL    DEFAULT 0"),
+    ("report",          "TEXT"),
+    ("entry",           "REAL"),
+    ("stop_loss",       "REAL"),
+    ("key_point",       "TEXT"),
+    ("winning_side",    "TEXT"),
+    ("model",           "TEXT"),
+    ("tool_calls",      "INTEGER DEFAULT 0"),
+    ("input_tokens",    "INTEGER DEFAULT 0"),
+    ("output_tokens",   "INTEGER DEFAULT 0"),
+    ("cost",            "REAL    DEFAULT 0"),
+    ("realized_return", "REAL"),
 )
 
 
@@ -193,7 +330,7 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, cols: tuple) -> None:
 
 
 def _init_harness_tables(db_path: str = EVAL_DB) -> None:
-    """Create harness_results + run_totals (and migrate older schemas)."""
+    """Create harness_results + run_totals + run_metrics (and migrate older schemas)."""
     conn = sqlite3.connect(db_path)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS harness_results (
@@ -219,7 +356,8 @@ def _init_harness_tables(db_path: str = EVAL_DB) -> None:
             tool_calls      INTEGER DEFAULT 0,
             input_tokens    INTEGER DEFAULT 0,
             output_tokens   INTEGER DEFAULT 0,
-            cost            REAL    DEFAULT 0
+            cost            REAL    DEFAULT 0,
+            realized_return REAL
         )
     """)
     _ensure_columns(conn, "harness_results", _HARNESS_EXTRA_COLS)
@@ -237,6 +375,23 @@ def _init_harness_tables(db_path: str = EVAL_DB) -> None:
             total_cost          REAL    NOT NULL
         )
     """)
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS run_metrics (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_label           TEXT NOT NULL,
+            run_timestamp       TEXT NOT NULL,
+            agent               TEXT NOT NULL,
+            total_weeks         INTEGER NOT NULL,
+            committed_weeks     INTEGER NOT NULL,
+            committed_hit_rate  REAL,
+            cumulative_return   REAL NOT NULL,
+            mean_return         REAL,
+            std_return          REAL,
+            sharpe_ratio        REAL,
+            max_drawdown        REAL NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -248,7 +403,7 @@ def log_harness_results(
     num_cutoffs: int,
     db_path: str = EVAL_DB,
 ) -> None:
-    """Save per-agent results and a run_totals row."""
+    """Save per-agent results, a run_totals row, and per-agent run_metrics."""
     _init_harness_tables(db_path)
     timestamp = datetime.now(timezone.utc).isoformat()
 
@@ -260,10 +415,11 @@ def log_harness_results(
                 direction, target, confidence, price_at_cutoff,
                 actual_price, direction_correct, target_error,
                 report, entry, stop_loss, key_point, winning_side,
-                model, tool_calls, input_tokens, output_tokens, cost)
+                model, tool_calls, input_tokens, output_tokens, cost,
+                realized_return)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                        ?, ?, ?, ?, ?,
-                       ?, ?, ?, ?, ?)""",
+                       ?, ?, ?, ?, ?, ?)""",
             (
                 run_label, timestamp, r.week, r.cutoff, r.agent,
                 r.direction, r.target, r.confidence, r.price_at_cutoff,
@@ -272,6 +428,7 @@ def log_harness_results(
                 r.target_error,
                 r.report, r.entry, r.stop_loss, r.key_point, r.winning_side,
                 r.model, r.tool_calls, r.input_tokens, r.output_tokens, r.cost,
+                r.realized_return,
             ),
         )
 
@@ -288,6 +445,22 @@ def log_harness_results(
             sum(r.cost for r in results),
         ),
     )
+
+    for m in _compute_run_metrics(results):
+        conn.execute(
+            """INSERT INTO run_metrics
+               (run_label, run_timestamp, agent, total_weeks, committed_weeks,
+                committed_hit_rate, cumulative_return, mean_return, std_return,
+                sharpe_ratio, max_drawdown)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_label, timestamp, m["agent"], m["total_weeks"],
+                m["committed_weeks"], m["committed_hit_rate"],
+                m["cumulative_return"], m["mean_return"], m["std_return"],
+                m["sharpe_ratio"], m["max_drawdown"],
+            ),
+        )
+
     conn.commit()
     conn.close()
     print(f"\nSaved {len(results)} harness results to eval.db (label: {run_label})")
@@ -470,11 +643,13 @@ def _run_one_cutoff(
     ):
         side_correct = None
         side_error = None
+        side_return = None
         if can_score:
             side_correct = _score_direction(
                 stance, price_at_cutoff, actual_price
             )
             side_error = abs(side_output.target - actual_price)
+            side_return = _realized_return(stance, price_at_cutoff, actual_price)
 
         results.append(
             TestResult(
@@ -488,6 +663,7 @@ def _run_one_cutoff(
                 actual_price=actual_price,
                 direction_correct=side_correct,
                 target_error=side_error,
+                realized_return=side_return,
                 report=side_output.report,
                 entry=side_output.entry,
                 stop_loss=side_output.stop_loss,
@@ -507,12 +683,16 @@ def _run_one_cutoff(
 
     pm_correct = None
     pm_error = None
+    pm_return = None
     if can_score:
         pm_correct = _score_direction(
             pm_output.decision, price_at_cutoff, actual_price
         )
         if pm_output.target:
             pm_error = abs(pm_output.target - actual_price)
+        pm_return = _realized_return(
+            pm_output.decision, price_at_cutoff, actual_price
+        )
 
     results.append(
         TestResult(
@@ -526,6 +706,7 @@ def _run_one_cutoff(
             actual_price=actual_price,
             direction_correct=pm_correct,
             target_error=pm_error,
+            realized_return=pm_return,
             report=pm_output.report,
             entry=pm_output.entry,
             stop_loss=pm_output.stop_loss,
@@ -559,11 +740,15 @@ def _record_ta(
     """Append the TA TestResult and print its line."""
     ta_correct = None
     ta_error = None
+    ta_return = None
     if can_score:
         ta_correct = _score_direction(
             ta_output.direction, price_at_cutoff, actual_price
         )
         ta_error = abs(ta_output.target_high - actual_price)
+        ta_return = _realized_return(
+            ta_output.direction, price_at_cutoff, actual_price
+        )
 
     results.append(
         TestResult(
@@ -577,6 +762,7 @@ def _record_ta(
             actual_price=actual_price,
             direction_correct=ta_correct,
             target_error=ta_error,
+            realized_return=ta_return,
             report=ta_output.report,
             model=ta_usage.model,
             tool_calls=ta_usage.tool_calls,
@@ -682,6 +868,33 @@ def print_summary(results: list[TestResult], run_label: str = "") -> None:
         f"{totals['output']:<10,} {totals['input'] + totals['output']:<10,} "
         f"${totals['cost']:<9.4f}"
     )
+
+    # --- Risk/return metrics ---
+    metric_rows = _compute_run_metrics(results)
+    if metric_rows:
+        print("\nRisk/Return:")
+        m_header = (
+            f"{'Agent':<10} {'Weeks':<6} {'Commit':<7} {'HitRate':<9} "
+            f"{'CumRet':<10} {'Sharpe':<9} {'MaxDD':<8}"
+        )
+        print(m_header)
+        print("-" * len(m_header))
+        order = {"ta": 0, "bull": 1, "bear": 2, "pm": 3, "buy_hold": 4}
+        for m in sorted(metric_rows, key=lambda x: order.get(x["agent"], 99)):
+            hit = (
+                f"{m['committed_hit_rate']:.0%}"
+                if m['committed_hit_rate'] is not None else "—"
+            )
+            sharpe = (
+                f"{m['sharpe_ratio']:+.2f}"
+                if m['sharpe_ratio'] is not None else "—"
+            )
+            print(
+                f"{m['agent']:<10} {m['total_weeks']:<6} "
+                f"{m['committed_weeks']:<7} {hit:<9} "
+                f"{m['cumulative_return']:+.1%}".ljust(56)
+                + f" {sharpe:<9} {m['max_drawdown']:.1%}"
+            )
 
     # --- Calibration (needs enough data) ---
     scored_all = [r for r in results if r.direction_correct is not None]
