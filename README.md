@@ -116,7 +116,7 @@ uv sync                           # install dependencies
 uv run main.py                    # full live run (real news via Perplexity)
 uv run main.py --fake-news        # live run with hardcoded news (skip Perplexity)
 uv run data.py --backfill 90      # download 90 days of history
-uv run pytest                     # tests
+uv run python test_graph_hitl.py  # integration smoke test (uses model APIs)
 uv run pyright                    # type check
 ```
 
@@ -135,7 +135,7 @@ The pipeline pauses at the human-in-the-loop gate with a `[a]pprove / [r]eject /
 | Storage | SQLite (`trading.db`, `eval.db`, `checkpoints.db`) |
 | Market data | CCXT → Binance |
 | Type checker | pyright |
-| Testing | pytest |
+| Quality | Integration smoke test · pyright |
 
 ---
 
