@@ -109,7 +109,7 @@ Every model call routes through OpenRouter via a small `make_llm()` helper. One 
 
 ## How to run it
 
-Requires **Python 3.12** and [uv](https://docs.astral.sh/uv/). Set `OPENROUTER_API_KEY` in `.env`.
+Requires **Python 3.12** and [uv](https://docs.astral.sh/uv/). Copy `.env.example` to `.env` and replace the `OPENROUTER_API_KEY` placeholder.
 
 ```bash
 uv sync                           # install dependencies
